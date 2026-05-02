@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>MBTA Smart Commute</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <!-- Tailwind -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Leaflet -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <style>
+        body {
+            background: linear-gradient(to bottom right, #0f172a, #1e293b);
+        }
+    </style>
+</head>
+
+<body class="text-white font-sans">
+
+<!-- NAVBAR -->
+<nav class="flex justify-between items-center p-4 bg-white/10 backdrop-blur">
+    <h1 class="text-xl font-bold">MBTA Smart Commute</h1>
+    <div class="space-x-4">
+        <button onclick="showSection('predict')" class="hover:text-blue-400">Predict</button>
+        <button onclick="showSection('map')" class="hover:text-blue-400">Live Map</button>
+    </div>
+</nav>
+
+<!-- PREDICT SECTION -->
+<div id="predict-section" class="flex justify-center mt-10">
+    <div class="bg-white/10 backdrop-blur-lg p-6 rounded-2xl w-full max-w-lg shadow-xl" style="margin: bottom 10px;">
+
+        <!-- Inputs -->
+        <div class="space-y-3">
+            <p>Select a Line:</p>
+            <select id="line" class="w-full p-2 rounded bg-white/20"></select>
+
+            <p>Select a Station:</p>
+            <select id="station" class="w-full p-2 rounded bg-white/20"></select><br>
+
+            <button onclick="predict()" class="w-full bg-blue-500 hover:bg-blue-600 p-3 rounded font-semibold">
+                Analyze Route
+            </button>
+        </div>
+
+        <!-- RESULTS -->
+        <div class="mt-6 border-t border-white/20 pt-4 space-y-4 text-center" style="margin: bottom 2%;">
+
+            <div id="decision" class="text-xl font-bold"></div>
+
+            <div id="risk" class="text-2xl font-bold">—</div>
+            <div id="delay">—</div>
+
+            <div id="next-train" class="text-sm text-gray-300"></div>
+
+            <div id="ai-suggestion" class="text-green-300"></div>
+
+            <!-- Things to Do -->
+            <div>
+                <h3 class="font-semibold mt-4 mb-1">Things to Do</h3>
+                <ul id="things" class="text-sm text-blue-300"></ul>
+            </div>
+
+        </div>
+    </div>
+</div>
+<br><br>
+
+<!-- MAP SECTION -->
+<div id="map-section" style="display:none;" class="mt-8 px-6">
+    <div class="bg-white/10 p-4 rounded-2xl">
+        <h2 class="mb-3">Live Train Map</h2>
+        <div id="map" style="height:500px; width:100%; border-radius:12px;"></div>
+        <p id="map-status" class="text-sm mt-2 text-gray-400"></p>
+    </div>
+</div>
+
+<script>
+const stationsData = {{ stations | tojson }};
+const lines = {{ lines | tojson }};
+
+const lineSelect = document.getElementById("line");
+const stationSelect = document.getElementById("station");
+
+// Populate lines
+lines.forEach(l => {
+    let opt = document.createElement("option");
+    opt.value = l;
+    opt.innerText = l;
+    lineSelect.appendChild(opt);
+});
+
+// Update stations
+function updateStations() {
+    const line = lineSelect.value;
+    stationSelect.innerHTML = "";
+
+    stationsData[line].forEach(s => {
+        let opt = document.createElement("option");
+        opt.value = s;
+        opt.innerText = s;
+        stationSelect.appendChild(opt);
+    });
+}
+
+lineSelect.addEventListener("change", () => {
+    updateStations();
+
+    if (document.getElementById("map-section").style.display === "block") {
+        loadVehicles();
+    }
+});
+
+updateStations();
+
+
+// ── MAP LOGIC ─────────────────────────
+let map;
+let mapInitialized = false;
+let markers = [];
+
+function showSection(section) {
+    const predict = document.getElementById("predict-section");
+    const mapSec = document.getElementById("map-section");
+
+    if (section === "map") {
+        predict.style.display = "none";
+        mapSec.style.display = "block";
+
+        setTimeout(() => {
+            if (!mapInitialized) {
+                map = L.map('map').setView([42.3601, -71.0589], 12);
+
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '© OpenStreetMap'
+                }).addTo(map);
+
+                mapInitialized = true;
+            }
+
+            map.invalidateSize();
+            loadVehicles();
+
+        }, 200);
+
+    } else {
+        mapSec.style.display = "none";
+        predict.style.display = "flex";  // ← changed from "block" to "flex"
+    }
+}
+
+
+// ── LOAD VEHICLES ─────────────────────
+async function loadVehicles() {
+    const status = document.getElementById("map-status");
+    status.innerText = "Loading trains...";
+
+    try {
+        const res = await fetch(`/vehicles/${lineSelect.value}`);
+        const data = await res.json();
+
+        markers.forEach(m => map.removeLayer(m));
+        markers = [];
+
+        if (data.length === 0) {
+            status.innerText = "No live train data.";
+            return;
+        }
+
+        data.forEach(v => {
+            const marker = L.circleMarker([v.lat, v.lon], {
+                radius: 6,
+                color: v.color || "#ff4d4d"
+            }).addTo(map);
+
+            markers.push(marker);
+        });
+
+        status.innerText = `Showing ${data.length} trains`;
+
+    } catch {
+        status.innerText = "Error loading train data.";
+    }
+}
+
+// Auto refresh
+setInterval(() => {
+    if (document.getElementById("map-section").style.display === "block") {
+        loadVehicles();
+    }
+}, 10000);
+
+
+// ── PREDICT ───────────────────────────
+async function predict() {
+    const res = await fetch("/predict", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+            line: lineSelect.value,
+            station: stationSelect.value
+        })
+    });
+
+    const data = await res.json();
+
+    document.getElementById("decision").innerText = data.decision;
+    document.getElementById("risk").innerText =
+        `${data.risk_level} (${data.delay_probability}%)`;
+    document.getElementById("delay").innerText =
+        `Delay: ${data.delay_minutes} min`;
+
+    if (data.live_predictions.length > 0) {
+        let next = new Date(data.live_predictions[0]);
+        document.getElementById("next-train").innerText =
+            "Next Train: " + next.toLocaleTimeString();
+    }
+
+    document.getElementById("ai-suggestion").innerText =
+        "💡 " + data.suggestion;
+
+    // Things to do
+    const thingsList = document.getElementById("things");
+    thingsList.innerHTML = "";
+
+    data.things_to_do.forEach(t => {
+        let li = document.createElement("li");
+        li.innerText = "📍 " + t;
+        thingsList.appendChild(li);
+    });
+}
+</script>
+
+</body>
+</html>
